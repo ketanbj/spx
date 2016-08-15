@@ -1,0 +1,245 @@
+#include <noise/protocol.h>
+#include "echo-common.h"
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <unistd.h>
+#include <getopt.h>
+
+#define short_options "c:s:vf"
+
+static struct option const long_options[] = {
+    {"c-port",                 required_argument,      NULL,       'c'},
+    {"s-port",                 required_argument,      NULL,       's'},
+    {"verbose",                 no_argument,            NULL,       'v'},
+    {"fixed-ephemeral",         no_argument,            NULL,       'f'},
+    {NULL,                      0,                      NULL,        0 }
+};
+
+/* Parsed command-line options */
+static int c_port = 8000;
+static int s_port = 7000;
+static int fixed_ephemeral = 0;
+static const char *s_name = NULL;
+
+
+/* Message buffer for send/receive */
+#define MAX_MESSAGE_LEN 65535
+static uint8_t message[MAX_MESSAGE_LEN + 2];
+
+/* Curve25519 private key to use when fixed ephemeral mode is selected */
+static uint8_t const fixed_ephemeral_25519[32] = {
+    0xbb, 0xdb, 0x4c, 0xdb, 0xd3, 0x09, 0xf1, 0xa1,
+    0xf2, 0xe1, 0x45, 0x69, 0x67, 0xfe, 0x28, 0x8c,
+    0xad, 0xd6, 0xf7, 0x12, 0xd6, 0x5d, 0xc7, 0xb7,
+    0x79, 0x3d, 0x5e, 0x63, 0xda, 0x6b, 0x37, 0x5b
+};
+
+/* Curve448 private key to use when fixed ephemeral mode is selected */
+static uint8_t const fixed_ephemeral_448[56] = {
+    0x3f, 0xac, 0xf7, 0x50, 0x3e, 0xbe, 0xe2, 0x52,
+    0x46, 0x56, 0x89, 0xf1, 0xd4, 0xe3, 0xb1, 0xdd,
+    0x21, 0x96, 0x39, 0xef, 0x9d, 0xe4, 0xff, 0xd6,
+    0x04, 0x9d, 0x6d, 0x71, 0xa0, 0xf6, 0x21, 0x26,
+    0x84, 0x0f, 0xeb, 0xb9, 0x90, 0x42, 0x42, 0x1c,
+    0xe1, 0x2a, 0xf6, 0x62, 0x6d, 0x98, 0xd9, 0x17,
+    0x02, 0x60, 0x39, 0x0f, 0xbc, 0x83, 0x99, 0xa5
+};
+
+/* Print usage information */
+static void usage(const char *progname)
+{
+    fprintf(stderr, "Usage: %s [options] s_hostname\n\n", progname);
+    fprintf(stderr, "Options:\n\n");
+    fprintf(stderr, "    --c-port=<port number>, -c <port number>\n");
+    fprintf(stderr, "        Port at which edge proxy is listening.\n\n");
+    fprintf(stderr, "    --s-port=<port number>, -s <port number>\n");
+    fprintf(stderr, "        Port at which server is listening.\n\n");
+    fprintf(stderr, "    --verbose, -v\n");
+    fprintf(stderr, "        Print all messages to and from the echo client.\n\n");
+    fprintf(stderr, "    --fixed-ephemeral, -f\n");
+    fprintf(stderr, "        Use a fixed local ephemeral key for testing.\n\n");
+}
+
+
+static int parse_options(int argc, char *argv[])
+{
+    const char *progname = argv[0];
+    int index = 0;
+    int ch;
+    while ((ch = getopt_long(argc, argv, short_options, long_options, &index)) != -1) {
+        switch (ch) {
+        case 'c':   c_port = atoi(optarg); break;
+        case 's':   s_port = atoi(optarg); break;
+        case 'v':   echo_verbose = 1; break;
+        case 'f':   fixed_ephemeral = 1; break;
+        default:
+            usage(progname);
+            return 0;
+        }
+    }
+    if ((optind + 1) != argc) {
+        usage(progname);
+        return 0;
+    }
+    s_name = argv[optind];
+
+    return 1;
+}
+
+int main(int argc, char *argv[])
+{
+	int c_fd = -1;
+	int s_fd = -1;
+	int ok = 1;
+	size_t message_size;
+	EchoProtocolId id;
+
+    NoiseProtocolId nid;
+    NoiseBuffer mbuf;
+	 int action;
+NoiseHandshakeState *handshake = 0;
+    NoiseCipherState *send_cipher = 0;
+    NoiseCipherState *recv_cipher = 0;
+	    int err;
+
+	/* Parse the command-line options */
+        if (!parse_options(argc, argv))
+        	return 1;
+
+    	/* Accept an incoming client connection */
+	c_fd = echo_accept(c_port);
+
+	/* Read the echo protocol identifier sent by the client */
+	if (ok && !echo_recv_exact(c_fd, (uint8_t *)&id, sizeof(id))) {
+		fprintf(stderr, "Did not receive the echo protocol identifier\n");
+		ok = 0;
+	}
+
+	/* Open port to server */
+	if(s_fd < 0)
+	{
+		fprintf(stderr,"%s s_name %d s_port\n", s_name, s_port);
+		s_fd = echo_connect(s_name, s_port);
+		if (s_fd < 0) {
+			fprintf(stderr, "unable to open connection to server\n");
+			ok = 0;
+			return 1;
+		}
+	}
+
+	/* Send the echo protocol identifier to the server */
+	if (!echo_send(s_fd, (const uint8_t *)&id, sizeof(id)))
+	{
+        	ok = 0;
+	}
+
+    /* Convert the echo protocol identifier into a Noise protocol identifier */
+    if (ok && !echo_to_noise_protocol_id(&nid, &id)) {
+        fprintf(stderr, "Unknown echo protocol identifier\n");
+        ok = 0;
+    }
+
+    /* Create a HandshakeState object to manage the server's handshake */
+    if (ok) {
+        err = noise_handshakestate_new_by_id
+            (&handshake, &nid, NOISE_ROLE_HANDLER);
+        if (err != NOISE_ERROR_NONE) {
+            noise_perror("create handshake", err);
+            ok = 0;
+        }
+    }
+
+    /* Start the handshake */
+    if (ok) {
+        err = noise_handshakestate_start(handshake);
+        if (err != NOISE_ERROR_NONE) {
+            noise_perror("start handshake", err);
+            ok = 0;
+        }
+    }
+
+    /* Run the handshake until we run out of things to read or write */
+    while (ok) {
+        action = noise_handshakestate_get_action(handshake);
+        if (action == NOISE_ACTION_WRITE_MESSAGE) {
+	/* recieve from server */
+	message_size = echo_recv(s_fd, message, sizeof(message));
+	if (!message_size) {
+        	ok = 0;
+        	break;
+	}
+	/* Write the next handshake message with a zero-length payload */
+            noise_buffer_set_output(mbuf, message, sizeof(message));
+            err = noise_handshakestate_write_message(handshake, &mbuf, NULL);
+            if (err != NOISE_ERROR_NONE) {
+                noise_perror("write handshake", err);
+                ok = 0;
+                break;
+            }
+	 /* send to client */	
+            if (!echo_send(c_fd, message, message_size)) {
+                ok = 0;
+                break;
+            }
+
+        } else if (action == NOISE_ACTION_READ_MESSAGE) {
+            /* Read the next handshake message and discard the payload */
+            message_size = echo_recv(c_fd, message, sizeof(message));
+            if (!message_size) {
+                ok = 0;
+                break;
+            }
+	    noise_buffer_set_input(mbuf, message, message_size);
+	    //fprintf(stderr, "hankshake state action: %d",handshake->state); 
+            err = noise_handshakestate_read_message(handshake, &mbuf, NULL);
+            if (err != NOISE_ERROR_NONE) {
+                noise_perror("read handshake", err);
+                ok = 0;
+                break;
+            }
+
+	    if (!echo_send(s_fd, message, message_size))
+	    {
+        	ok = 0;
+		break;
+	    }
+        } else {
+            /* Either the handshake has finished or it has failed */	
+            break;
+        }
+    }
+         fprintf(stderr,"Handshake Complete\n"); 	
+	while(ok)
+	{
+		/* recieve message from the client */
+        	message_size = echo_recv(c_fd, message, sizeof(message));
+        	if (!message_size) {
+                	ok = 0;
+                	break;
+        	}
+		fprintf(stderr,"1\n");
+	
+		/* Forward the message to actual server */
+ 		if (!echo_send(s_fd, message, message_size)) {
+                	ok = 0;
+                	break;
+            	}
+		fprintf(stderr,"2\n");
+		
+		/* recieve message from the server */
+        	message_size = echo_recv(s_fd, message, sizeof(message));
+        	if (!message_size) {
+                	ok = 0;
+                	break;
+        	}	
+		fprintf(stderr,"3\n");
+
+		/* Forward the message to actual client */
+ 		if (!echo_send(c_fd, message, message_size)) {
+                	ok = 0;
+                	break;
+            	}
+		fprintf(stderr,"4\n");
+	}
+}

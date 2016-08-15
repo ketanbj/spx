@@ -1,0 +1,24 @@
+/* Enclave.edl - Top EDL file. */
+
+enclave {
+    
+    include "user_types.h" /* buffer_t */
+
+    /* 
+     * ocall_print_string - invokes OCALL to display string buffer inside the enclave.
+     *  [in]: copy the string buffer to App outside.
+     *  [string]: specifies 'str' is a NULL terminated buffer.
+     */
+    untrusted {
+        void ocall_print_string([in, string] const char *str);
+    };
+
+    trusted {
+        public void test_init(void);
+        public void get([in, size=klen] char *key, size_t klen, [out, size=vlen] char *value, size_t vlen);
+        public void complete_get([in, size=flen] char *fcont, size_t flen, [out, size=retvlen] char *retval, size_t retvlen);
+        public void put([in, size=eklen] char *ereq, size_t eklen, [out, size=vlen] char *value, size_t vlen);
+        public void complete_put([in, size=vlen] char *eval, size_t vlen, [out, size=retvlen] char *retval, size_t retvlen);
+        //public void test_exchange([in, out] sgx_ec256_public_t*, sgx_ec256_public_t*);
+    };
+};
