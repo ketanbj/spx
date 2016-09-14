@@ -27,7 +27,8 @@
 #include <string.h>
 #include <unistd.h>
 #include <getopt.h>
-
+#include <sys/time.h>
+#include <time.h>
 #define short_options "c:s:p:gvf"
 
 static struct option const long_options[] = {
@@ -225,11 +226,13 @@ int main(int argc, char *argv[])
     int fd;
     size_t message_size;
     size_t max_line_len;
-
+    struct timespec start, end;
     /* Parse the command-line options */
     if (!parse_options(argc, argv))
         return 1;
 
+
+    clock_gettime(CLOCK_MONOTONIC_RAW, &start);
     /* Check that the echo protocol supports the handshake protocol.
        One-way handshake patterns and XXfallback are not yet supported. */
     if (!echo_get_protocol_id(&id, protocol)) {
@@ -258,7 +261,6 @@ int main(int argc, char *argv[])
         noise_handshakestate_free(handshake);
         return 1;
     }
-
     /* Send the echo protocol identifier to the server */
     ok = 1;
     if (!echo_send(fd, (const uint8_t *)&id, sizeof(id)))
@@ -338,15 +340,24 @@ int main(int argc, char *argv[])
             ok = 0;
         }
     }
-
+    clock_gettime(CLOCK_MONOTONIC_RAW, &end);
+    uint64_t delta_us = (end.tv_sec - start.tv_sec) * 1000000 + (end.tv_nsec - start.tv_nsec) / 1000;
+    printf("%lld\n",delta_us);
+#if 0
     /* Tell the user that the handshake has been successful */
     if (ok) {
         printf("%s handshake complete.  Enter text to be echoed ...\n", protocol);
     }
-
     /* Read lines from stdin, send to the server, and wait for echoes */
     max_line_len = sizeof(message) - 2 - noise_cipherstate_get_mac_length(send_cipher);
-    while (ok && fgets((char *)(message + 2), max_line_len, stdin)) {
+
+    FILE *wlf = fopen("./workload.txt",'r');
+    if(!wlf){
+	printf("Unable to open workload file\n");
+	wlf=stdin;
+    }
+    printf("Opened the workload file\n");  
+    while (ok && fgets((char *)(message + 2), max_line_len, wlf)) {
         /* Pad the message to a uniform size */
         message_size = strlen((const char *)(message + 2));
         if (padding) {
@@ -407,7 +418,7 @@ int main(int argc, char *argv[])
         fputs("Received: ", stdout);
         fwrite(mbuf.data, 1, mbuf.size, stdout);
     }
-
+#endif
     /* Clean up and exit */
     noise_cipherstate_free(send_cipher);
     noise_cipherstate_free(recv_cipher);
