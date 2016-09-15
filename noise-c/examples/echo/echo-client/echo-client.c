@@ -351,8 +351,8 @@ int main(int argc, char *argv[])
     }
 
 #define FILE_TRANSFER 1 
-#ifdef FILE_TRANSFER	
-printf("0\n");	
+#ifdef FILE_TRANSFER
+clock_gettime(CLOCK_MONOTONIC_RAW, &start);	
     char wlfilename[] = "./workload.txt";
     /* open a workload file */
     FILE *wlf = fopen(wlfilename,"rb");
@@ -360,27 +360,29 @@ printf("0\n");
 	printf("Unable to open workload file %s\n", wlfilename);
 	return 0;
     }
-    char* path = NULL;
+    char* line = NULL;
+    char path[256];
     int n = 0;
     int bytes_read = 0;
-printf("0.5\n");	
-    while(getline(&path,&n,wlf) != -1){
+    while(getline(&line,&n,wlf) != -1){
+	strcpy(path, line);
+	path[strlen(path) -1] = '\0';
+	//printf("path: %s %d\n", path,strlen(path));
 	FILE *payload = fopen(path, "rb");
 	if(!payload){
+		perror(NULL);
 		printf("Unable to open payload file: %s\n",path);
 		return 0;
 	}
-printf("1\n");	
     max_line_len = sizeof(message) - 2 - noise_cipherstate_get_mac_length(send_cipher);
-	while(feof(payload)){
-		bytes_read = fread((char *)message+2,max_line_len,1,payload);
-		if(bytes_read < max_line_len && feof(payload)){
+	while(!feof(payload)){
+		bytes_read = fread((char *)message+2,1,max_line_len,payload);
+		if(bytes_read < 1){
 			printf("Unable to read from payload file\n");
 			return -1;
 		}
 		message_size = bytes_read;
 
-printf("2\n");	
 		/* Encrypt the message and send it */
         	noise_buffer_set_inout
             	(mbuf, message + 2, message_size, sizeof(message) - 2);
@@ -393,11 +395,11 @@ printf("2\n");
         	message[0] = (uint8_t)(mbuf.size >> 8);
         	message[1] = (uint8_t)mbuf.size;
 
-printf("3\n");	
         	if (!echo_send(fd, message, mbuf.size + 2)) {
             		ok = 0;
             	break;
         	}
+		//printf("sent %d bytes back\n", mbuf.size+2);
 		
 
 		/* Wait for a message from the server */
@@ -407,12 +409,13 @@ printf("3\n");
             		ok = 0;
             		break;
         	}
-printf("4\n");	
 		
-		printf("Received %d bytes back\n", message_size - 2);
 	}
+	clock_gettime(CLOCK_MONOTONIC_RAW, &end);
+    	delta_us = (end.tv_sec - start.tv_sec) * 1000000 + (end.tv_nsec - start.tv_nsec) / 1000;
+	printf("size: %s time: %lld \n", path, delta_us);
 
-	if(path) {free(path); path = NULL;}
+	if(line) {free(line); line = NULL;}
 
 		
     }
