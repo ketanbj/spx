@@ -343,6 +343,82 @@ int main(int argc, char *argv[])
     clock_gettime(CLOCK_MONOTONIC_RAW, &end);
     uint64_t delta_us = (end.tv_sec - start.tv_sec) * 1000000 + (end.tv_nsec - start.tv_nsec) / 1000;
     printf("%lld\n",delta_us);
+
+    /* Tell the user that the handshake has been successful */
+    if (!ok) {
+        printf("%s handshake Failed.\n", protocol);
+	return 1;
+    }
+
+#define FILE_TRANSFER 1 
+#ifdef FILE_TRANSFER	
+printf("0\n");	
+    char wlfilename[] = "./workload.txt";
+    /* open a workload file */
+    FILE *wlf = fopen(wlfilename,"rb");
+    if(wlf == NULL){
+	printf("Unable to open workload file %s\n", wlfilename);
+	return 0;
+    }
+    char* path = NULL;
+    int n = 0;
+    int bytes_read = 0;
+printf("0.5\n");	
+    while(getline(&path,&n,wlf) != -1){
+	FILE *payload = fopen(path, "rb");
+	if(!payload){
+		printf("Unable to open payload file: %s\n",path);
+		return 0;
+	}
+printf("1\n");	
+    max_line_len = sizeof(message) - 2 - noise_cipherstate_get_mac_length(send_cipher);
+	while(feof(payload)){
+		bytes_read = fread((char *)message+2,max_line_len,1,payload);
+		if(bytes_read < max_line_len && feof(payload)){
+			printf("Unable to read from payload file\n");
+			return -1;
+		}
+		message_size = bytes_read;
+
+printf("2\n");	
+		/* Encrypt the message and send it */
+        	noise_buffer_set_inout
+            	(mbuf, message + 2, message_size, sizeof(message) - 2);
+        	err = noise_cipherstate_encrypt(send_cipher, &mbuf);
+       		if (err != NOISE_ERROR_NONE) {
+            	noise_perror("write", err);
+            	ok = 0;
+            	break;
+        	}
+        	message[0] = (uint8_t)(mbuf.size >> 8);
+        	message[1] = (uint8_t)mbuf.size;
+
+printf("3\n");	
+        	if (!echo_send(fd, message, mbuf.size + 2)) {
+            		ok = 0;
+            	break;
+        	}
+		
+
+		/* Wait for a message from the server */
+        	message_size = echo_recv(fd, message, sizeof(message));
+        	if (!message_size) {
+            		fprintf(stderr, "Remote side terminated the connection\n");
+            		ok = 0;
+            		break;
+        	}
+printf("4\n");	
+		
+		printf("Received %d bytes back\n", message_size - 2);
+	}
+
+	if(path) {free(path); path = NULL;}
+
+		
+    }
+#endif
+   
+    
 #if 0
     /* Tell the user that the handshake has been successful */
     if (ok) {
@@ -351,12 +427,6 @@ int main(int argc, char *argv[])
     /* Read lines from stdin, send to the server, and wait for echoes */
     max_line_len = sizeof(message) - 2 - noise_cipherstate_get_mac_length(send_cipher);
 
-    FILE *wlf = fopen("./workload.txt",'r');
-    if(!wlf){
-	printf("Unable to open workload file\n");
-	wlf=stdin;
-    }
-    printf("Opened the workload file\n");  
     while (ok && fgets((char *)(message + 2), max_line_len, wlf)) {
         /* Pad the message to a uniform size */
         message_size = strlen((const char *)(message + 2));
